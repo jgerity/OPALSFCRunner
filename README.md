@@ -39,7 +39,7 @@ DEFAULT_RINIT = 1.1 * 1e3 # mm
 rinit = DEFAULT_RINIT * (1.0 + np.linspace(-0.02, 0.02, 5))
 phiv = DEFAULT_PHIV * (1.0 + np.linspace(-0.02, 0.02, 5))
 
-runner = OPALSFCRunner('SFC.in.template')
+runner = OPALSFCRunner('SFC.in.template', inputdir='.')
 
 for r, pv in itertools.product(rinit, phiv):
     runner.simargs['rinit'] = r

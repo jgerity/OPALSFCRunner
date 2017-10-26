@@ -7,6 +7,7 @@ from datetime import datetime
 import string
 import subprocess
 import numpy as np
+import h5py
 
 T_OFFSET = -4.27285889623020639999745562670770232e-9 # s
 NOMINAL_FREQ = 116.4e6 # Hz
@@ -46,6 +47,9 @@ class OPALSFCRunner():
             path = os.path.dirname(template_file)
             path = os.path.abspath(path)
             inputdir = os.path.join(path, "input")
+        else:
+            inputdir = simargs['inputdir']
+            print("looking for input/ at %s" % inputdir)
 
         self.simargs = SIM_DEFAULTS.copy()
         self.simargs['INPUTDIR'] = inputdir
@@ -63,7 +67,8 @@ class OPALSFCRunner():
         """ Perform the simulation """
         self.lastrun = datetime.now()
         timestamp = self.lastrun.strftime("%m%d%Y-%H%M%S")
-        outfn = "%s.in" % timestamp
+        outfn = '%s.in' % timestamp
+        logfn = '%s.log' % timestamp
         workdir = "{fn}_{ts}".format(fn=self.prefix, ts=timestamp)
         # TODO: what should be done if directory already exists?
         # (e.g. if we want to re-run a simulation)
@@ -73,10 +78,23 @@ class OPALSFCRunner():
         os.chdir(workdir)
         with open(outfn, 'w') as outfile:
             outfile.write(self.simtext)
+        
+        with open(logfn, 'w') as logfile:
+            subprocess.call(['opal', outfn], env=os.environ, stderr=subprocess.STDOUT, stdout=logfile)
+            os.chdir(olddir)
 
-        subprocess.call(['opal', outfn], env=os.environ) #, stdout=foo, stderr=bar)
-        os.chdir(olddir)
 
-    def postprocess(self):
-        """ Make plots, calculate phases, etc. """
-        raise NotImplementedError
+def postprocess(fn):
+    """ Make plots, calculate phases, etc. """
+    with h5py.File(fn, 'r') as h5file:
+        steps = sorted(h5file.keys(), key=lambda k: int(k.split('#')[-1]))
+        Nsteps = len(steps)
+        def stepiter(stride=1):
+            for step in steps[::stride]:
+                for val in ('x', 'y', 'z', 'px', 'py', 'pz'):
+                    yield h5file[step][val][()]
+        # TODO: this only allocates for one particle
+        stepdata = np.fromiter(stepiter(), 
+                               dtype=np.float,
+                               count=Nsteps*6).reshape((Nsteps, 6))
+    return stepdata

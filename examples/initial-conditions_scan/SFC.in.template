@@ -1,0 +1,172 @@
+OPTION, ECHO=FALSE;
+OPTION, INFO=FALSE;
+OPTION, ASCIIDUMP=TRUE;
+OPTION, PSDUMPFREQ=150;
+OPTION, PSDUMPLOCALFRAME=FALSE;
+OPTION, EBDUMP=FALSE;
+OPTION, TELL; // Print current settings to output
+
+TITLE, STRING="Trying to track one 'turn' the SFC with mid-plane fields";
+
+ECHARGE = 1.60217653e-19;  // elementary charge in Coulombs
+
+Edes = 6.5 / 1000; // GeV
+gamma = (Edes + PMASS)/PMASS; 
+beta = sqrt(1-(1/gamma^2));
+gambet = gamma*beta; 
+P0 = gambet*PMASS;
+
+brho = 3.3356 * P0; // T*m, for P0 in GeV
+
+rinit = $rinit; // mm
+phiinit = 0; // deg 
+// CLOCKWISE angle of velocity from azimuthal direction (PT), radians 
+phi_v = $phiv;
+
+PRinit = gambet * SIN(phi_v);
+
+h = 25;
+nominal_freq = 116.4; // Dior uses exactly 116.4 MHz
+
+RF_resolution = 0.25; // in deg
+desired_dt = RF_resolution/(360 * nominal_freq * 1e6);
+//desired_dt = 0.1e-9; // in s
+nturns = 20;
+
+// OPAL documentation/output aren't in agreement here, but see below
+// implementation from TrackRun for why this needs to be in MHz
+bfreq = nominal_freq / h; // in MHz
+
+// See below from src/Track/TrackRun.cpp:L612 for details about how this 
+// STEPSPERTURN crap is implemented:
+//
+//     Track::block->bunch->setdT(1.0 / (Track::block->stepsPerTurn * beam->getFrequency() * 1.0e6));
+//
+// The harmonic factor also comes into play, see
+// src/Algorithms/ParallelCyclotronTracker.cpp:2808
+//
+//     const double dt = itsBunch->getdT() * 1.0e9 * harm; // time step size (s --> ns)
+//
+
+time_per_turn = 1/(bfreq*1e6); // in s
+steps_per_turn = ROUND(time_per_turn / desired_dt) * h;
+//max_steps = nturns * steps_per_turn;
+max_steps = 50000 * 30;
+
+VALUE, VALUE={desired_dt, steps_per_turn, max_steps};
+
+N_sectors = 6;
+
+// For the relevant part of OPAL's code that handles RF phase, see 
+// classic/5.0/src/AbsBeamline/Cyclotron.cpp - Cyclotron::Apply() (L498-L518)
+//
+//      double phase = 2.0 * pi * 1E-3 * (*rffi) * t + *rfphii;
+//      double ebscale = *escali;
+//      E += ebscale * cos(phase) * tmpE;
+//      B -= ebscale * sin(phase) * tmpB;
+//
+// (t is measured in ns, rffi is in MHz, rfphii is in rad)
+// (the factor of 1e-3 is the phase residual from ns, MHz units)
+
+// All quantities in radians
+// Dior injects at t=-4.27 ns
+t_offset = -4.27285889623020639999745562670770232e-9;
+dphi = -2*PI * h/N_sectors;
+//phi_correction = 2*PI * t_offset * nominal_freq * 1e6;
+phi_correction = $phi_correction;
+phi0 = -25.0*PI/180 + phi_correction;
+   
+phi1 = phi0 + 1*dphi;
+phi2 = phi0 + 2*dphi;
+phi3 = phi0 + 4*dphi;
+phi4 = phi0 + 5*dphi;
+
+VALUE,VALUE={phi1, phi2, phi3, phi4};
+
+// BANDRF uses the SAME field map format as CARBONCYCL, but allows 
+// RF specification, too
+//
+// Interpolation of fields from H5Part is trilinear and is performed in
+// classic/5.0/src/Fields/FM3DH5Block.cpp:FM3DH5Block::getFieldstrength() (L225)
+//
+// Dior's interpolation (to a grid) is BICUBIC
+RING: CYCLOTRON, TYPE="BANDRF", CYHARMON=h, 
+            PHIINIT=phiinit, PRINIT=PRinit, RINIT=rinit,
+            MINZ=-50.0, MAXZ=50.0,
+            SYMMETRY=1.0, FMAPFN="$INPUTDIR/BsecAll_combined.dat",
+            RFMAPFN={
+                "$INPUTDIR/cav1_out.h5",
+                "$INPUTDIR/cav2_out.h5",
+                "$INPUTDIR/cav3_out.h5",
+                "$INPUTDIR/cav4_out.h5"
+            },
+            RFFREQ={
+                nominal_freq, 
+                nominal_freq, 
+                nominal_freq, 
+                nominal_freq
+            }, 
+            ESCALE={1.0, 1.0, 1.0, 1.0}, 
+            RFPHI={phi1, phi2, phi3, phi4}, 
+            SUPERPOSE=true;
+
+PROBE1: PROBE, XSTART=432.596189432, XEND=2370.09618943, YSTART=1049.27857926, YEND=4405.12701892;
+PROBE2: PROBE, XSTART=-692.403810568, XEND=-2629.90381057, YSTART=899.278579257, YEND=4255.12701892;
+PROBE3: PROBE, XSTART=-432.596189432, XEND=-2370.09618943, YSTART=-1049.27857926, YEND=-4405.12701892;
+PROBE4: PROBE, XSTART=692.403810568, XEND=2629.90381057, YSTART=-899.278579257, YEND=-4255.12701892;
+
+// I know you're super-tempted to do this, but it breaks OPAL, because of frikkin course it does.
+//PROBES: LINE = (PROBE1, PROBE2, PROBE3, PROBE4);
+
+L1: LINE = (RING, PROBE1, PROBE2, PROBE3, PROBE4);
+
+bunch_dt = 25e-9; // bunch length in sec
+// divide by 3 so the bunch is roughly the right length; 3sigma = 99.7%
+//bunch_sz = beta * clight * bunch_dt / 3;
+bunch_sz = 0;
+
+// these are in m
+Dist1: DISTRIBUTION, DISTRIBUTION = FROMFILE, FNAME = "$INPUTDIR/dist.dat";
+//Dist1: DISTRIBUTION, DISTRIBUTION = GAUSS,
+//    OFFSETX = 0.0, OFFSETY = 0.0, OFFSETZ = 0.0,
+//    SIGMAX = 1.0e-4, SIGMAY = 1.0e-4, SIGMAZ = bunch_sz,
+//    OFFSETPX = 0.0, OFFSETPY = 0.0, OFFSETPZ = 0.0,
+//    SIGMAPX = 0.0 , SIGMAPY = 0.0 , SIGMAPZ = 0.0 ,
+//    CORRX = 0.0, CORRY = 0.0, CORRZ = 0.0,
+//    CUTOFFX = 4.0, CUTOFFY = 4.0, CUTOFFLONG = 4.0;
+
+FS_ON:FIELDSOLVER, FSTYPE=FFT, MX=32, MY=32, MT=32, 
+            PARFFTX=true, PARFFTY=true, PARFFTT=false,
+            BCFFTX=open, BCFFTY=open, BCFFTT=open, BBOXINCR=2;
+
+FS_OFF:FIELDSOLVER, FSTYPE=NONE, MX=32, MY=32, MT=32, 
+            PARFFTX=true, PARFFTY=true, PARFFTT=false,
+            BCFFTX=open, BCFFTY=open, BCFFTT=open, BBOXINCR=2;
+
+single_particle_beam: BEAM, PARTICLE=PROTON, pc=P0, NPART=1, 
+            BCURRENT=bfreq, BFREQ=bfreq;
+
+target_current = 100e-9; // in Amperes
+macro_ratio = 1e2;  // Number of physical particles per macroparticle
+Npart = target_current * bunch_dt / ECHARGE;
+Nmacro = ROUND(Npart / macro_ratio);  // Number of macroparticles
+
+low_current_beam: BEAM, PARTICLE=PROTON, pc=P0, NPART=Nmacro, 
+            BCURRENT=target_current,
+            BFREQ=bfreq;
+
+Select, Line=L1;
+
+// Tracking a single particle trajectory
+TRACK, LINE=L1, BEAM=single_particle_beam, STEPSPERTURN=steps_per_turn, MAXSTEPS=max_steps;
+RUN, METHOD="CYCLOTRON-T", BEAM=single_particle_beam, FIELDSOLVER=FS_OFF, 
+            DISTRIBUTION=Dist1;
+
+// Tracking with more than one particle
+// TRACK, LINE=L1, BEAM=low_current_beam, STEPSPERTURN=steps_per_turn, MAXSTEPS=max_steps;
+// RUN, METHOD="CYCLOTRON-T", BEAM=low_current_beam, FIELDSOLVER=FS_ON, 
+//             DISTRIBUTION=Dist1;
+
+
+ENDTRACK;
+STOP;
